@@ -6,6 +6,7 @@ import zipfile
 import json
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -38,6 +39,9 @@ def run_pngquant(input_file: str, output_file: str, quality: str = "60-80"):
     except subprocess.CalledProcessError as e:
         raise Exception(f"pngquant failed: {e.output.decode()}")
 
+@app.get("/")
+async def root():
+    return RedirectResponse("/docs")
 
 @app.post("/compress-download")
 async def compress_and_download(files: List[UploadFile] = File(...)):
