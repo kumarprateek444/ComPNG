@@ -4,8 +4,15 @@ import tempfile
 import subprocess
 import zipfile
 import json
-from fastapi import FastAPI
+from typing import List
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+
+# --------------------------------------------------
+# APP INITIALIZATION (ONLY ONCE)
+# --------------------------------------------------
 
 app = FastAPI()
 
@@ -13,33 +20,20 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # required for Figma (origin = null)
     allow_credentials=True,
-    allow_methods=["*"],  # IMPORTANT
-    allow_headers=["*"],
-)
-
-from typing import List
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
-
-
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-app = FastAPI()
-
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],            # use ["*"] for dev; restrict to your plugin origin later
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# --------------------------------------------------
+# LOGGING
+# --------------------------------------------------
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --------------------------------------------------
+# PNGQUANT
+# --------------------------------------------------
 
 def run_pngquant(input_file: str, output_file: str, quality: str = "60-80"):
     cmd = [
@@ -54,20 +48,29 @@ def run_pngquant(input_file: str, output_file: str, quality: str = "60-80"):
     except subprocess.CalledProcessError as e:
         raise Exception(f"pngquant failed: {e.output.decode()}")
 
+# --------------------------------------------------
+# ROOT
+# --------------------------------------------------
+
 @app.get("/")
 async def root():
     return RedirectResponse("/docs")
 
-from fastapi import Request
-from fastapi.responses import Response
+# --------------------------------------------------
+# CORS PREFLIGHT (CRITICAL)
+# --------------------------------------------------
 
 @app.options("/compress-download")
 async def options_compress_download(request: Request):
     return Response(status_code=204)
 
+# --------------------------------------------------
+# MAIN ENDPOINT
+# --------------------------------------------------
 
 @app.post("/compress-download")
 async def compress_and_download(files: List[UploadFile] = File(...)):
+
     if len(files) == 0:
         raise HTTPException(status_code=400, detail="At least one file required")
 
@@ -90,15 +93,12 @@ async def compress_and_download(files: List[UploadFile] = File(...)):
             input_path = os.path.join(temp_dir, file.filename)
             compressed_path = input_path.replace(".png", "_compressed.png")
 
-            # Save uploaded file
             with open(input_path, "wb") as f:
                 f.write(await file.read())
 
-            # Try to compress
             try:
                 run_pngquant(input_path, compressed_path)
             except Exception:
-                # if pngquant fails, fallback to original
                 compressed_path = input_path
 
             orig_size = os.path.getsize(input_path)
@@ -127,29 +127,20 @@ async def compress_and_download(files: List[UploadFile] = File(...)):
                 },
             })
 
-        # Build stats array for header
-        stats = [item["stats"] for item in output_files]
-        stats_json = json.dumps(stats)
+        stats_json = json.dumps([item["stats"] for item in output_files])
 
-        # ✅ SINGLE FILE → direct PNG download
+        # SINGLE FILE
         if len(output_files) == 1:
-            file_info = output_files[0]
+            f = output_files[0]
             return FileResponse(
-                file_info["path"],
+                f["path"],
                 media_type="image/png",
-                filename=file_info["filename"],
+                filename=f["filename"],
                 headers={"X-Compression-Stats": stats_json},
             )
 
-        # ✅ MULTIPLE FILES → ZIP download
+        # MULTIPLE FILES → ZIP
         zip_name = "compressed.zip"
-        counter = 0
-
-        # Note: this checks in CWD only for name uniqueness of download label.
-        while os.path.exists(zip_name):
-            counter += 1
-            zip_name = f"compressed({counter}).zip"
-
         zip_path = os.path.join(temp_dir, zip_name)
 
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -164,5 +155,4 @@ async def compress_and_download(files: List[UploadFile] = File(...)):
         )
 
     finally:
-        # We leave cleanup to the OS here; changing this requires careful timing.
         pass
