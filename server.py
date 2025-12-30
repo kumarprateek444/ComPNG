@@ -4,6 +4,19 @@ import tempfile
 import subprocess
 import zipfile
 import json
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # required for Figma (origin = null)
+    allow_credentials=True,
+    allow_methods=["*"],  # IMPORTANT
+    allow_headers=["*"],
+)
+
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -44,6 +57,14 @@ def run_pngquant(input_file: str, output_file: str, quality: str = "60-80"):
 @app.get("/")
 async def root():
     return RedirectResponse("/docs")
+
+from fastapi import Request
+from fastapi.responses import Response
+
+@app.options("/compress-download")
+async def options_compress_download(request: Request):
+    return Response(status_code=204)
+
 
 @app.post("/compress-download")
 async def compress_and_download(files: List[UploadFile] = File(...)):
