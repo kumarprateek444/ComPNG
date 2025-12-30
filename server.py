@@ -18,11 +18,12 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # required for Figma (origin = null)
-    allow_credentials=True,
+    allow_origins=["*"],      # required for Figma (origin = null)
+    allow_credentials=False,  # 🔥 MUST be False with wildcard
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # --------------------------------------------------
 # LOGGING
