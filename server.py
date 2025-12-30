@@ -18,8 +18,8 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # Figma origin = null
-    allow_credentials=False,      # MUST be False with "*"
+    allow_origins=["*"],      # Figma origin = null
+    allow_credentials=False,  # MUST be False with wildcard
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -40,13 +40,11 @@ def run_pngquant(input_file: str, output_file: str, quality: str = "60-80"):
         "pngquant",
         f"--quality={quality}",
         "--force",
-        "--output", output_file,
+        "--output",
+        output_file,
         input_file,
     ]
-    try:
-        subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(e.output.decode())
+    subprocess.check_output(cmd, stderr=subprocess.STDOUT)
 
 # --------------------------------------------------
 # ROOT
@@ -107,43 +105,28 @@ async def compress_analyze(files: List[UploadFile] = File(...)):
 # 2️⃣ SINGLE FILE DOWNLOAD
 # --------------------------------------------------
 
-@app.post("/compress-zip")
-async def compress_zip(files: List[UploadFile] = File(...)):
-    try:
-        if not files:
-            raise HTTPException(status_code=400, detail="No files uploaded")
+@app.post("/compress-file")
+async def compress_file(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".png"):
+        raise HTTPException(status_code=400, detail="Only PNG allowed")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            zip_path = os.path.join(tmpdir, "compressed.zip")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = os.path.join(tmpdir, file.filename)
+        output_path = input_path.replace(".png", "_compressed.png")
 
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-                for file in files:
-                    if not file.filename.lower().endswith(".png"):
-                        raise HTTPException(status_code=400, detail="Only PNG allowed")
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
 
-                    input_path = os.path.join(tmpdir, file.filename)
-                    output_path = input_path.replace(".png", "_compressed.png")
+        try:
+            run_pngquant(input_path, output_path)
+        except Exception:
+            output_path = input_path
 
-                    with open(input_path, "wb") as f:
-                        f.write(await file.read())
-
-                    try:
-                        run_pngquant(input_path, output_path)
-                    except Exception:
-                        output_path = input_path
-
-                    zipf.write(output_path, arcname=file.filename)
-
-            return FileResponse(
-                zip_path,
-                media_type="application/zip",
-                filename="compressed.zip",
-            )
-
-    except Exception as e:
-        logger.exception("compress-zip failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
+        return FileResponse(
+            output_path,
+            media_type="image/png",
+            filename=file.filename,
+        )
 
 # --------------------------------------------------
 # 3️⃣ ZIP DOWNLOAD
@@ -200,5 +183,5 @@ async def compress_zip(files: List[UploadFile] = File(...)):
             filename="compressed.zip",
             headers={
                 "X-Compression-Stats": json.dumps(stats)
-            }
+            },
         )
