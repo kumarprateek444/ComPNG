@@ -173,12 +173,17 @@ async def compress_zip(
 
     try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for file in files:
+            for index, file in enumerate(files):
                 if not file.filename.lower().endswith(".png"):
                     raise HTTPException(status_code=400, detail="Only PNG allowed")
 
-                input_path = os.path.join(tmpdir, file.filename)
-                output_path = input_path.replace(".png", "_compressed.png")
+                # ✅ UNIQUE FILE NAMES (CRITICAL FIX)
+                safe_name = f"{index}_{file.filename}"
+                input_path = os.path.join(tmpdir, safe_name)
+                output_path = os.path.join(
+                    tmpdir,
+                    f"{index}_compressed.png"
+                )
 
                 with open(input_path, "wb") as f:
                     f.write(await file.read())
@@ -196,6 +201,7 @@ async def compress_zip(
                 final_size = comp if used else orig
                 reduction = round((orig - final_size) * 100 / orig, 2) if used else 0.0
 
+                # ZIP keeps ORIGINAL filename (UI consistency)
                 zipf.write(final_path, arcname=file.filename)
 
                 stats.append({
@@ -223,3 +229,4 @@ async def compress_zip(
         shutil.rmtree(tmpdir, ignore_errors=True)
         logger.exception("ZIP compression failed")
         raise HTTPException(status_code=500, detail=str(e))
+
