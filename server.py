@@ -107,46 +107,43 @@ async def compress_analyze(files: List[UploadFile] = File(...)):
 # 2️⃣ SINGLE FILE DOWNLOAD
 # --------------------------------------------------
 
-@app.post("/compress-file")
-async def compress_file(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".png"):
-        raise HTTPException(status_code=400, detail="Only PNG allowed")
+@app.post("/compress-zip")
+async def compress_zip(files: List[UploadFile] = File(...)):
+    try:
+        if not files:
+            raise HTTPException(status_code=400, detail="No files uploaded")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        input_path = os.path.join(tmpdir, file.filename)
-        output_path = input_path.replace(".png", "_compressed.png")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = os.path.join(tmpdir, "compressed.zip")
 
-        with open(input_path, "wb") as f:
-            f.write(await file.read())
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+                for file in files:
+                    if not file.filename.lower().endswith(".png"):
+                        raise HTTPException(status_code=400, detail="Only PNG allowed")
 
-        try:
-            run_pngquant(input_path, output_path)
-        except Exception:
-            output_path = input_path
+                    input_path = os.path.join(tmpdir, file.filename)
+                    output_path = input_path.replace(".png", "_compressed.png")
 
-        orig = os.path.getsize(input_path)
-        comp = os.path.getsize(output_path)
+                    with open(input_path, "wb") as f:
+                        f.write(await file.read())
 
-        used = comp < orig
-        final_size = comp if used else orig
-        reduction = round((orig - final_size) * 100 / orig, 2) if used else 0.0
+                    try:
+                        run_pngquant(input_path, output_path)
+                    except Exception:
+                        output_path = input_path
 
-        stats = [{
-            "filename": file.filename,
-            "original_size": orig,
-            "final_size": final_size,
-            "percent_reduction": reduction,
-            "used_compressed": used,
-        }]
+                    zipf.write(output_path, arcname=file.filename)
 
-        return FileResponse(
-            output_path,
-            media_type="image/png",
-            filename=file.filename,
-            headers={
-                "X-Compression-Stats": json.dumps(stats)
-            }
-        )
+            return FileResponse(
+                zip_path,
+                media_type="application/zip",
+                filename="compressed.zip",
+            )
+
+    except Exception as e:
+        logger.exception("compress-zip failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # --------------------------------------------------
 # 3️⃣ ZIP DOWNLOAD
