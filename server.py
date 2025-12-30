@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],            # use ["*"] for dev; restrict to your plugin origin later
