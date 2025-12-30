@@ -6,12 +6,13 @@ import zipfile
 import json
 from typing import List
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.datastructures import UploadFile
 
 # --------------------------------------------------
-# APP INITIALIZATION (ONLY ONCE)
+# APP INITIALIZATION
 # --------------------------------------------------
 
 app = FastAPI()
@@ -19,11 +20,11 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],      # required for Figma (origin = null)
-    allow_credentials=False,  # 🔥 MUST be False with wildcard
+    allow_credentials=False,  # MUST be False with wildcard
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Compression-Stats"],
 )
-
 
 # --------------------------------------------------
 # LOGGING
@@ -58,29 +59,32 @@ async def root():
     return RedirectResponse("/docs")
 
 # --------------------------------------------------
-# CORS PREFLIGHT (CRITICAL)
+# PREFLIGHT
 # --------------------------------------------------
 
 @app.options("/compress-download")
-async def options_compress_download(request: Request):
+async def options_compress_download():
     return Response(status_code=204)
 
 # --------------------------------------------------
-# MAIN ENDPOINT
+# MAIN ENDPOINT (MANUAL MULTIPART PARSING)
 # --------------------------------------------------
 
 @app.post("/compress-download")
-async def compress_and_download(
-    files: List[UploadFile] = File(default=[])
-):
-    
+async def compress_and_download(request: Request):
 
-    if len(files) == 0:
-        raise HTTPException(status_code=400, detail="At least one file required")
+    form = await request.form()
+    files: List[UploadFile] = []
+
+    for value in form.values():
+        if isinstance(value, UploadFile):
+            files.append(value)
+
+    if not files:
+        raise HTTPException(status_code=400, detail="No files received")
 
     if len(files) > 10:
         raise HTTPException(status_code=400, detail="Maximum 10 files allowed")
-        
 
     temp_dir = tempfile.mkdtemp()
     output_files = []
@@ -93,7 +97,7 @@ async def compress_and_download(
                     detail=f"Only PNG allowed. Invalid file: {file.filename}"
                 )
 
-            logger.info(f"Compressing for download: {file.filename}")
+            logger.info(f"Compressing: {file.filename}")
 
             input_path = os.path.join(temp_dir, file.filename)
             compressed_path = input_path.replace(".png", "_compressed.png")
@@ -145,8 +149,7 @@ async def compress_and_download(
             )
 
         # MULTIPLE FILES → ZIP
-        zip_name = "compressed.zip"
-        zip_path = os.path.join(temp_dir, zip_name)
+        zip_path = os.path.join(temp_dir, "compressed.zip")
 
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
             for item in output_files:
@@ -155,7 +158,7 @@ async def compress_and_download(
         return FileResponse(
             zip_path,
             media_type="application/zip",
-            filename=zip_name,
+            filename="compressed.zip",
             headers={"X-Compression-Stats": stats_json},
         )
 
