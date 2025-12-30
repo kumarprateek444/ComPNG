@@ -70,13 +70,17 @@ async def options_compress_download(request: Request):
 # --------------------------------------------------
 
 @app.post("/compress-download")
-async def compress_and_download(files: List[UploadFile] = File(...)):
+async def compress_and_download(
+    files: List[UploadFile] = File(default=[])
+):
+    
 
     if len(files) == 0:
         raise HTTPException(status_code=400, detail="At least one file required")
 
     if len(files) > 10:
         raise HTTPException(status_code=400, detail="Maximum 10 files allowed")
+        
 
     temp_dir = tempfile.mkdtemp()
     output_files = []
