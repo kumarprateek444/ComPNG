@@ -15,6 +15,15 @@ from fastapi.responses import FileResponse
 # --------------------------------------------------
 
 app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],        # required for Figma (origin = null)
+    allow_credentials=False,    # MUST be False when using "*"
+    allow_methods=["*"],        # allows POST, OPTIONS, etc.
+    allow_headers=["*"],        # allows multipart/form-data
+)
 
 from fastapi.responses import RedirectResponse
 
