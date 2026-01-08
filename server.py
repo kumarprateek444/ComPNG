@@ -16,6 +16,13 @@ from fastapi.responses import FileResponse
 
 app = FastAPI()
 
+from fastapi.responses import RedirectResponse
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/docs")
+
+
 # --------------------------------------------------
 # LOGGING
 # --------------------------------------------------
