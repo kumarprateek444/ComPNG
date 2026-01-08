@@ -1,247 +1,203 @@
 import os
-import json
-import shutil
 import tempfile
 import subprocess
-import zipfile
 import logging
+import zipfile
 from typing import List
 
-from fastapi import (
-    FastAPI,
-    UploadFile,
-    File,
-    HTTPException,
-)
-from fastapi.responses import (
-    JSONResponse,
-    FileResponse,
-    RedirectResponse,
-)
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
 
-# ==================================================
-# APP INITIALIZATION
-# ==================================================
 
-app = FastAPI(title="ComPNG API", version="1.0")
+# --------------------------------------------------
+# APP INIT
+# --------------------------------------------------
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],          # Figma origin = null
-    allow_credentials=False,      # MUST be False with wildcard
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI()
 
-# ==================================================
+# --------------------------------------------------
 # LOGGING
-# ==================================================
+# --------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
-logger = logging.getLogger("compng")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("compress-analyze")
 
-# ==================================================
-# PNGQUANT WRAPPER (NEVER CRASHES)
-# ==================================================
+# --------------------------------------------------
+# PNGQUANT HELPER
+# --------------------------------------------------
 
-def run_pngquant_safe(input_file: str, output_file: str) -> bool:
-    """
-    Tries to compress using pngquant.
-    Returns True if compressed file is produced.
-    Returns False if pngquant fails for any reason.
-    NEVER raises.
-    """
+def run_pngquant(input_path: str, output_path: str, quality: str = "60-80"):
     cmd = [
         "pngquant",
-        "--quality=60-80",
+        f"--quality={quality}",
         "--force",
-        "--output",
-        output_file,
-        input_file,
+        "--output", output_path,
+        input_path,
     ]
 
     try:
         subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-        if os.path.exists(output_file):
-            return True
-        return False
-    except Exception as e:
-        logger.warning(
-            f"pngquant failed for {os.path.basename(input_file)}: {e}"
-        )
-        return False
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(e.output.decode())
 
-# ==================================================
-# ROOT
-# ==================================================
-
-@app.get("/")
-async def root():
-    return RedirectResponse("/docs")
-
-# ==================================================
-# 1️⃣ ANALYZE ONLY (JSON RESPONSE)
-# ==================================================
+# --------------------------------------------------
+# ANALYZE ENDPOINT (JSON ONLY)
+# --------------------------------------------------
 
 @app.post("/compress-analyze")
 async def compress_analyze(
     files: List[UploadFile] = File(...)
 ):
+    # ---------- validation ----------
     if not files:
-        raise HTTPException(status_code=400, detail="At least one PNG required")
+        raise HTTPException(status_code=400, detail="At least one PNG file required")
 
     if len(files) > 10:
-        raise HTTPException(status_code=400, detail="Max 10 files allowed")
+        raise HTTPException(status_code=400, detail="Maximum 10 files allowed")
 
     results = []
 
+    # ---------- temp workspace ----------
     with tempfile.TemporaryDirectory() as tmpdir:
-        for index, file in enumerate(files):
+
+        for file in files:
             if not file.filename.lower().endswith(".png"):
-                raise HTTPException(status_code=400, detail="Only PNG allowed")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only PNG allowed: {file.filename}"
+                )
 
-            raw_bytes = await file.read()
-            if not raw_bytes:
-                raise HTTPException(status_code=400, detail="Empty PNG file")
+            input_path = os.path.join(tmpdir, file.filename)
+            output_path = input_path.replace(".png", "_compressed.png")
 
-            input_path = os.path.join(tmpdir, f"{index}_input.png")
-            output_path = os.path.join(tmpdir, f"{index}_compressed.png")
-
+            # save upload
             with open(input_path, "wb") as f:
-                f.write(raw_bytes)
+                f.write(await file.read())
 
-            compressed = run_pngquant_safe(input_path, output_path)
+            # compress attempt
+            try:
+                run_pngquant(input_path, output_path)
+            except Exception as e:
+                logger.warning("pngquant failed for %s, using original", file.filename)
+                output_path = input_path
 
-            if compressed:
-                final_path = output_path
-            else:
-                final_path = input_path
+            # stats
+            original_size = os.path.getsize(input_path)
+            compressed_size = os.path.getsize(output_path)
 
-            orig_size = os.path.getsize(input_path)
-            final_size = os.path.getsize(final_path)
+            used_compressed = compressed_size < original_size
+            final_size = compressed_size if used_compressed else original_size
 
-            reduction = (
-                round((orig_size - final_size) * 100 / orig_size, 2)
-                if compressed
-                else 0.0
+            percent_reduction = (
+                round((original_size - final_size) * 100 / original_size, 2)
+                if used_compressed else 0.0
             )
 
             results.append({
                 "filename": file.filename,
-                "original_size": orig_size,
+                "original_size": original_size,
                 "final_size": final_size,
-                "percent_reduction": reduction,
-                "used_compressed": compressed,
+                "percent_reduction": percent_reduction,
+                "used_compressed": used_compressed,
             })
 
     return JSONResponse(results)
 
-# ==================================================
-# 2️⃣ SINGLE FILE DOWNLOAD
-# ==================================================
+# --------------------------------------------------
+# SINGLE FILE DOWNLOAD
+# --------------------------------------------------
 
 @app.post("/compress-file")
-async def compress_file(
-    file: UploadFile = File(...)
-):
+async def compress_file(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".png"):
         raise HTTPException(status_code=400, detail="Only PNG allowed")
 
-    tmpdir = tempfile.mkdtemp()
+    # create temp files (DO NOT auto-delete)
+    input_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    output_path = input_tmp.name.replace(".png", "_compressed.png")
 
     try:
-        raw_bytes = await file.read()
-        if not raw_bytes:
-            raise HTTPException(status_code=400, detail="Empty PNG file")
+        # save upload
+        input_tmp.write(await file.read())
+        input_tmp.close()
 
-        input_path = os.path.join(tmpdir, "input.png")
-        output_path = os.path.join(tmpdir, "compressed.png")
+        # try compression
+        try:
+            run_pngquant(input_tmp.name, output_path)
+        except Exception:
+            output_path = input_tmp.name
 
-        with open(input_path, "wb") as f:
-            f.write(raw_bytes)
+        # choose smaller file
+        orig_size = os.path.getsize(input_tmp.name)
+        final_size = os.path.getsize(output_path)
 
-        compressed = run_pngquant_safe(input_path, output_path)
-
-        final_path = output_path if compressed else input_path
+        final_path = output_path if final_size < orig_size else input_tmp.name
 
         return FileResponse(
             final_path,
             media_type="image/png",
-            filename=file.filename,
+            filename=file.filename
         )
 
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    except Exception as e:
+        logger.exception("compress-file failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# ==================================================
-# 3️⃣ MULTIPLE FILES → ZIP DOWNLOAD
-# ==================================================
+
+# --------------------------------------------------
+# MULTIPLE FILE DOWNLOAD
+# --------------------------------------------------
 
 @app.post("/compress-zip")
-async def compress_zip(
-    files: List[UploadFile] = File(...)
-):
+async def compress_zip(files: List[UploadFile] = File(...)):
     if not files:
         raise HTTPException(status_code=400, detail="At least one PNG required")
 
     if len(files) > 10:
-        raise HTTPException(status_code=400, detail="Max 10 files allowed")
+        raise HTTPException(status_code=400, detail="Maximum 10 files allowed")
 
-    tmpdir = tempfile.mkdtemp()
-    zip_path = os.path.join(tmpdir, "compressed.zip")
-    stats = []
+    # Create a persistent temp ZIP file
+    zip_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    zip_path = zip_tmp.name
+    zip_tmp.close()
 
     try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for index, file in enumerate(files):
+            for file in files:
                 if not file.filename.lower().endswith(".png"):
-                    raise HTTPException(status_code=400, detail="Only PNG allowed")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Only PNG allowed: {file.filename}"
+                    )
 
-                raw_bytes = await file.read()
-                if not raw_bytes:
-                    continue  # skip empty files safely
+                # temp input
+                input_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                input_tmp.write(await file.read())
+                input_tmp.close()
 
-                input_path = os.path.join(tmpdir, f"{index}_input.png")
-                output_path = os.path.join(tmpdir, f"{index}_compressed.png")
+                output_path = input_tmp.name.replace(".png", "_compressed.png")
 
-                with open(input_path, "wb") as f:
-                    f.write(raw_bytes)
+                try:
+                    run_pngquant(input_tmp.name, output_path)
+                except Exception:
+                    output_path = input_tmp.name
 
-                compressed = run_pngquant_safe(input_path, output_path)
+                # choose smaller
+                orig_size = os.path.getsize(input_tmp.name)
+                final_size = os.path.getsize(output_path)
+                final_path = output_path if final_size < orig_size else input_tmp.name
 
-                final_path = output_path if compressed else input_path
-
-                orig_size = os.path.getsize(input_path)
-                final_size = os.path.getsize(final_path)
-
-                reduction = (
-                    round((orig_size - final_size) * 100 / orig_size, 2)
-                    if compressed
-                    else 0.0
-                )
-
+                # add to zip with ORIGINAL filename
                 zipf.write(final_path, arcname=file.filename)
-
-                stats.append({
-                    "filename": file.filename,
-                    "original_size": orig_size,
-                    "final_size": final_size,
-                    "percent_reduction": reduction,
-                    "used_compressed": compressed,
-                })
 
         return FileResponse(
             zip_path,
             media_type="application/zip",
-            filename="compressed.zip",
-            headers={
-                "X-Compression-Stats": json.dumps(stats)
-            },
+            filename="compressed.zip"
         )
 
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    except Exception as e:
+        logger.exception("compress-zip failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
